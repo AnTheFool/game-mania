@@ -1,0 +1,1345 @@
+# Số Liên Tranh Bá - phiên bản gộp 1 file
+import math
+import random
+import sys
+import time
+from collections import Counter
+
+import pygame
+from typing import Tuple, List, Optional, Set
+
+
+# ======================================================================
+# CẤU HÌNH
+# ======================================================================
+
+# Configuration file for Số Liên Tranh Bá
+
+
+# Screen settings
+SCREEN_WIDTH = 1000
+SCREEN_HEIGHT = 700
+FPS = 60
+
+# Colors
+WHITE = (255, 255, 255)
+BLACK = (0, 0, 0)
+GRAY = (200, 200, 200)
+DARK_GRAY = (100, 100, 100)
+LIGHT_GRAY = (50, 50, 50)
+GREEN = (0, 255, 100)
+RED = (255, 50, 50)
+BLUE = (100, 150, 255)
+YELLOW = (255, 215, 0)
+ORANGE = (255, 165, 0)
+PURPLE = (200, 100, 255)
+CYAN = (0, 255, 255)
+BG_COLOR = BLACK
+
+# Cell colors
+CELL_BG = (40, 40, 60)
+CELL_BORDER = (100, 150, 200)
+CELL_SELECTED = (255, 215, 0)
+CELL_HOVER = (80, 100, 150)
+
+# Font
+FONT_NAME = 'arial'
+
+# Game modes
+MODES = {
+    'EASY': {'name': 'DỄ', 'size': 4, 'max_value': 50, 'min_value': 2},
+    'MEDIUM': {'name': 'TRUNG BÌNH', 'size': 6, 'max_value': 100, 'min_value': 2},
+    'HARD': {'name': 'KHÓ', 'size': 8, 'max_value': 500, 'min_value': 20},
+    'EXPERT': {'name': 'SIÊU TRÍ TUỆ', 'size': 10, 'max_value': 1000, 'min_value': 50}
+}
+
+# Scoring
+SCORE_SAME = 100
+SCORE_ONE_ELIMINATED = 50
+SCORE_GCD_NO_ELIMINATION = 10
+
+# UI settings
+BUTTON_WIDTH = 200
+BUTTON_HEIGHT = 50
+BUTTON_MARGIN = 20
+CELL_MARGIN = 5
+SIDE_PANEL_WIDTH = 250
+
+
+# ======================================================================
+# HÀM TIỆN ÍCH
+# ======================================================================
+
+def gcd(a: int, b: int) -> int:
+    """Calculate greatest common divisor"""
+    return math.gcd(a, b)
+
+def is_coprime(a: int, b: int) -> bool:
+    """Check if two numbers are coprime (GCD = 1)"""
+    return gcd(a, b) == 1
+
+def apply_gcd_rule(val1: int, val2: int) -> Tuple[Optional[int], Optional[int], int]:
+    """
+    Apply the GCD rule to two values
+    Returns: (new_val1, new_val2, gcd_value)
+    None means the cell should be eliminated
+    """
+    if val1 == val2:
+        return None, None, val1
+    
+    g = gcd(val1, val2)
+    new_val1 = val1 // g
+    new_val2 = val2 // g
+    
+    # If result is 1, eliminate the cell
+    if new_val1 == 1:
+        new_val1 = None
+    if new_val2 == 1:
+        new_val2 = None
+    
+    return new_val1, new_val2, g
+
+def calculate_score(val1: int, val2: int) -> int:
+    """Calculate score based on the operation"""
+    
+    if val1 == val2:
+        return SCORE_SAME
+    
+    new_val1, new_val2, _ = apply_gcd_rule(val1, val2)
+    
+    # Both eliminated or one eliminated
+    if new_val1 is None and new_val2 is None:
+        return SCORE_SAME
+    elif new_val1 is None or new_val2 is None:
+        return SCORE_ONE_ELIMINATED
+    else:
+        return SCORE_GCD_NO_ELIMINATION
+
+def prime_factorization(n: int) -> dict:
+    """Return prime factorization as a dictionary {prime: count}"""
+    factors = {}
+    d = 2
+    while d * d <= n:
+        while n % d == 0:
+            factors[d] = factors.get(d, 0) + 1
+            n //= d
+        d += 1
+    if n > 1:
+        factors[n] = factors.get(n, 0) + 1
+    return factors
+
+def count_total_prime_factors(numbers: list) -> dict:
+    """Count total occurrences of each prime factor across all numbers"""
+    total_counts = {}
+    for num in numbers:
+        if num is None:
+            continue
+        factors = prime_factorization(num)
+        for prime, count in factors.items():
+            total_counts[prime] = total_counts.get(prime, 0) + count
+    return total_counts
+
+def all_prime_counts_even(numbers: list) -> bool:
+    """Check if all prime factors appear an even number of times"""
+    counts = count_total_prime_factors(numbers)
+    for count in counts.values():
+        if count % 2 != 0:
+            return False
+    return True
+
+def format_time(seconds: float) -> str:
+    """Format time as MM:SS"""
+    minutes = int(seconds // 60)
+    secs = int(seconds % 60)
+    return str(minutes).zfill(2) + ":" + str(secs).zfill(2)
+
+
+# ======================================================================
+# BẢNG CHƠI (BOARD)
+# ======================================================================
+
+class Board:
+    def __init__(self, size: int, max_value: int, min_value: int = 2):
+        self.size = size
+        self.max_value = max_value
+        self.min_value = min_value
+        self.grid = [[None for _ in range(size)] for _ in range(size)]
+        self.last_path = []
+        self.generate_solvable_board()
+    
+    def generate_solvable_board(self):
+        """Generate a board with even count of all prime factors (guaranteed solvable)"""
+        max_attempts = 150
+        for attempt in range(max_attempts):
+            self._generate_balanced_board()
+            # Verify the board has even prime counts and has valid moves
+            values = [cell for row in self.grid for cell in row if cell is not None]
+            
+            # Check diversity: no value should appear more than 25% of the time
+            if len(values) > 0:
+                counts = Counter(values)
+                max_count = max(counts.values())
+                if max_count > len(values) // 4:
+                    continue  # Too many duplicates, try again
+            
+            if all_prime_counts_even(values) and self._has_multiple_solutions():
+                return
+        
+        # Fallback: generate simple diverse board
+        self._generate_simple_solvable_board()
+    
+    def _generate_balanced_board(self):
+        """Generate board ensuring all prime factors appear even number of times"""
+        
+        total_cells = self.size * self.size
+        max_same = total_cells // 4  # Max 25% same values
+        values = []
+        value_counts = {}
+        
+        # Start with some base numbers
+        primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47]
+        available_primes = [p for p in primes if p <= min(self.max_value // 2, 100)]
+        
+        if len(available_primes) < 3:
+            available_primes = [2, 3, 5, 7, 11, 13]
+        
+        # Calculate a good base multiplier to get numbers in range
+        base_multiplier = max(1, self.min_value // 10)
+        
+        # Generate random numbers for most of the board
+        target_cells = total_cells - 8  # Leave room for balancing
+        attempts = 0
+        max_attempts = target_cells * 3
+        
+        while len(values) < target_cells and attempts < max_attempts:
+            attempts += 1
+            
+            # Create number from 1-3 random primes
+            num_primes = random.randint(1, min(3, len(available_primes)))
+            selected = random.sample(available_primes, num_primes)
+            
+            value = base_multiplier
+            for p in selected:
+                # Use power 1-2 for this prime
+                power = random.randint(1, 2)
+                value *= (p ** power)
+            
+            # Scale to fit in range [min_value, max_value]
+            if value < self.min_value:
+                # Scale up
+                multiplier = (self.min_value // value) + random.randint(1, 3)
+                value *= multiplier
+            
+            while value > self.max_value and value > self.min_value:
+                value //= random.choice([2, 3])
+            
+            # Ensure in valid range
+            if value < self.min_value:
+                value = random.randint(self.min_value, min(self.min_value * 10, self.max_value))
+            
+            # Avoid multiples of 10 for hard/expert modes
+            if self.min_value >= 20 and value % 10 == 0:
+                offset = random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+                value += offset
+                if value > self.max_value:
+                    value -= 10 + offset
+            
+            # Ensure diversity - don't add if we already have too many of this value
+            if self.min_value <= value <= self.max_value:
+                if value_counts.get(value, 0) < max_same:
+                    values.append(value)
+                    value_counts[value] = value_counts.get(value, 0) + 1
+        
+        # If we couldn't generate enough, add some diversity
+        while len(values) < target_cells:
+            value = random.randint(self.min_value, min(self.min_value * 20, self.max_value))
+            # Avoid multiples of 10
+            if self.min_value >= 20 and value % 10 == 0:
+                value += random.choice([1, 3, 7])
+            if value_counts.get(value, 0) < max_same:
+                values.append(value)
+                value_counts[value] = value_counts.get(value, 0) + 1
+        
+        # Now balance the prime counts
+        current_counts = count_total_prime_factors(values)
+        
+        # Find primes with odd counts
+        odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        # Add numbers to balance the odd primes
+        balance_attempts = 0
+        while len(values) < total_cells and balance_attempts < 100:
+            balance_attempts += 1
+            
+            if not odd_primes:
+                # Just add diverse values
+                value = random.randint(self.min_value, min(self.min_value * 15, self.max_value))
+                # Avoid multiples of 10
+                if self.min_value >= 20 and value % 10 == 0:
+                    value += random.choice([1, 3, 7])
+                if value_counts.get(value, 0) < max_same:
+                    values.append(value)
+                    value_counts[value] = value_counts.get(value, 0) + 1
+            else:
+                # Pick some odd primes to balance
+                primes_to_balance = list(odd_primes.keys())[:min(2, len(odd_primes))]
+                
+                value = base_multiplier
+                for p in primes_to_balance:
+                    value *= p
+                
+                # Scale to fit range
+                if value < self.min_value:
+                    multiplier = (self.min_value // value) + 1
+                    value *= multiplier
+                
+                while value > self.max_value and value > self.min_value:
+                    value //= 2
+                
+                # Avoid multiples of 10
+                if self.min_value >= 20 and value % 10 == 0:
+                    value += random.choice([1, 3, 7])
+                
+                if self.min_value <= value <= self.max_value:
+                    if value_counts.get(value, 0) < max_same:
+                        values.append(value)
+                        value_counts[value] = value_counts.get(value, 0) + 1
+                        # Update counts
+                        current_counts = count_total_prime_factors(values)
+                        odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        # Fill remaining cells
+        while len(values) < total_cells:
+            value = random.randint(self.min_value, min(self.min_value * 10, self.max_value))
+            # Avoid multiples of 10
+            if self.min_value >= 20 and value % 10 == 0:
+                value += random.choice([1, 3, 7])
+            if value_counts.get(value, 0) < max_same:
+                values.append(value)
+                value_counts[value] = value_counts.get(value, 0) + 1
+        
+        # Trim to exact size
+        values = values[:total_cells]
+        
+        # Final balance pass
+        current_counts = count_total_prime_factors(values)
+        odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        if odd_primes:
+            # Replace some values to balance (up to 25% of board)
+            num_replacements = min(len(odd_primes) * 2, total_cells // 4)
+            replace_indices = random.sample(range(len(values)), num_replacements)
+            
+            for idx in replace_indices:
+                if not odd_primes:
+                    break
+                    
+                primes_to_use = list(odd_primes.keys())[:min(2, len(odd_primes))]
+                value = base_multiplier
+                for p in primes_to_use:
+                    value *= p
+                
+                # Ensure in range
+                if value < self.min_value:
+                    value *= ((self.min_value // value) + 1)
+                    
+                while value > self.max_value:
+                    value //= 2
+                
+                # Avoid multiples of 10
+                if self.min_value >= 20 and value % 10 == 0:
+                    value += random.choice([1, 3, 7])
+                    if value > self.max_value:
+                        value -= 10
+                
+                if self.min_value <= value <= self.max_value:
+                    values[idx] = value
+                
+                current_counts = count_total_prime_factors(values)
+                odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        random.shuffle(values)
+        
+        # Fill grid
+        idx = 0
+        for i in range(self.size):
+            for j in range(self.size):
+                self.grid[i][j] = values[idx] if idx < len(values) else self.min_value
+                idx += 1
+    
+    def _generate_simple_solvable_board(self):
+        """Generate a simple board that's definitely solvable with diversity"""
+        
+        total_cells = self.size * self.size
+        values = []
+        
+        # Use base values scaled to min_value
+        if self.min_value >= 20:
+            # For hard/expert modes - avoid multiples of 10
+            base_values = [21, 28, 33, 35, 42, 49, 56, 63, 66, 77, 84, 91, 99, 105, 132, 143, 154, 165]
+        else:
+            # For easy/medium modes
+            base_values = [6, 10, 12, 15, 20, 30]
+        
+        max_same = total_cells // 4  # Max 25% can be the same
+        
+        # Count for each value
+        value_counts = {}
+        
+        while len(values) < total_cells:
+            # Pick a random base value
+            base = random.choice(base_values)
+            
+            # Create variations: base, base*2, base*3, etc.
+            max_mult = max(2, min(5, self.max_value // base))
+            multiplier = random.randint(1, max_mult)
+            value = min(base * multiplier, self.max_value)
+            
+            # For hard/expert modes, avoid multiples of 10
+            if self.min_value >= 20 and value % 10 == 0:
+                # Add a small offset to avoid ending in 0
+                offset = random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+                value += offset
+                if value > self.max_value:
+                    value -= 10 + offset
+            
+            # Ensure value is at least min_value
+            if value < self.min_value:
+                value = self.min_value
+            
+            # Check if adding this value would exceed the max_same limit
+            if value_counts.get(value, 0) < max_same:
+                values.append(value)
+                value_counts[value] = value_counts.get(value, 0) + 1
+            else:
+                # Try a different value
+                for attempt in range(10):
+                    alt_base = random.choice(base_values)
+                    alt_mult = random.randint(1, max(2, min(5, self.max_value // alt_base)))
+                    alt_value = min(alt_base * alt_mult, self.max_value)
+                    
+                    # Avoid multiples of 10 for hard/expert
+                    if self.min_value >= 20 and alt_value % 10 == 0:
+                        offset = random.choice([1, 2, 3, 4, 5, 6, 7, 8, 9])
+                        alt_value += offset
+                        if alt_value > self.max_value:
+                            alt_value -= 10 + offset
+                    
+                    if alt_value < self.min_value:
+                        alt_value = self.min_value
+                    if alt_value >= self.min_value and value_counts.get(alt_value, 0) < max_same:
+                        values.append(alt_value)
+                        value_counts[alt_value] = value_counts.get(alt_value, 0) + 1
+                        break
+                else:
+                    # If still can't find, add a random value in range
+                    rand_val = random.randint(self.min_value, min(self.min_value * 10, self.max_value))
+                    # Avoid multiples of 10
+                    if self.min_value >= 20 and rand_val % 10 == 0:
+                        rand_val += random.choice([1, 3, 7])
+                    values.append(rand_val)
+                    value_counts[rand_val] = value_counts.get(rand_val, 0) + 1
+        
+        # Balance prime factors
+        current_counts = count_total_prime_factors(values)
+        odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        # Replace some values to balance
+        if odd_primes and len(values) > 0:
+            replace_indices = random.sample(range(len(values)), min(len(odd_primes) * 2, len(values) // 3))
+            for idx in replace_indices:
+                if not odd_primes:
+                    break
+                
+                primes_to_use = list(odd_primes.keys())[:min(2, len(odd_primes))]
+                value = 1
+                for p in primes_to_use:
+                    value *= p
+                
+                # Scale to fit range
+                if value < self.min_value:
+                    multiplier = (self.min_value // value) + 1
+                    value *= multiplier
+                
+                while value > self.max_value and value > self.min_value:
+                    value //= 2
+                
+                # Avoid multiples of 10 for hard/expert
+                if self.min_value >= 20 and value % 10 == 0:
+                    value += random.choice([1, 3, 7])
+                    if value > self.max_value:
+                        value -= 10
+                
+                if self.min_value <= value <= self.max_value:
+                    values[idx] = value
+                
+                current_counts = count_total_prime_factors(values)
+                odd_primes = {prime: count for prime, count in current_counts.items() if count % 2 != 0}
+        
+        random.shuffle(values)
+        
+        # Fill grid
+        idx = 0
+        for i in range(self.size):
+            for j in range(self.size):
+                self.grid[i][j] = values[idx] if idx < len(values) else self.min_value
+                idx += 1
+
+    def _has_multiple_solutions(self) -> bool:
+        """Check if board has at least 2 different valid moves"""
+        solutions = []
+        
+        for i in range(self.size):
+            for j in range(self.size):
+                if self.grid[i][j] is None:
+                    continue
+                for x in range(self.size):
+                    for y in range(self.size):
+                        if (i, j) != (x, y) and self.grid[x][y] is not None:
+                            if self.can_connect((i, j), (x, y)):
+                                solutions.append(((i, j), (x, y)))
+                                if len(solutions) >= 2:
+                                    return True
+        return len(solutions) >= 2
+    
+    def can_connect(self, pos1: Tuple[int, int], pos2: Tuple[int, int], 
+                   grid: Optional[List[List[Optional[int]]]] = None) -> bool:
+        """Check if two positions can be connected with max 2 turns (Pikachu rule)"""
+        if grid is None:
+            grid = self.grid
+        
+        r1, c1 = pos1
+        r2, c2 = pos2
+        
+        if pos1 == pos2:
+            return False
+        
+        val1 = grid[r1][c1]
+        val2 = grid[r2][c2]
+        
+        if val1 is None or val2 is None:
+            return False
+        
+        # Try all possible paths with 0, 1, or 2 turns
+        # Check direct line (0 turns)
+        path = self._check_line(pos1, pos2, grid)
+        if path:
+            self.last_path = path
+            return True
+        
+        # Check L-shape (1 turn)
+        path = self._check_l_path(pos1, pos2, grid)
+        if path:
+            self.last_path = path
+            return True
+        
+        # Check Z-shape and U-shape (2 turns)
+        path = self._check_z_path(pos1, pos2, grid)
+        if path:
+            self.last_path = path
+            return True
+        
+        self.last_path = []
+        return False
+    
+    def _is_empty_or_endpoint(self, pos: Tuple[int, int], end1: Tuple[int, int], 
+                              end2: Tuple[int, int], grid: List[List[Optional[int]]]) -> bool:
+        """Check if position is empty or one of the endpoints"""
+        r, c = pos
+        if pos == end1 or pos == end2:
+            return True
+        if 0 <= r < self.size and 0 <= c < self.size:
+            return grid[r][c] is None
+        # Allow positions outside the board (for U-shaped paths)
+        if r < 0 or r >= self.size or c < 0 or c >= self.size:
+            return True
+        return False
+    
+    def _check_line(self, pos1: Tuple[int, int], pos2: Tuple[int, int], 
+                    grid: List[List[Optional[int]]]):
+        """Check if there's a direct line between two positions, return path if exists"""
+        r1, c1 = pos1
+        r2, c2 = pos2
+        
+        # Horizontal line
+        if r1 == r2:
+            # Check if row is within bounds
+            if 0 <= r1 < self.size:
+                min_c, max_c = min(c1, c2), max(c1, c2)
+                for c in range(max(0, min_c + 1), min(self.size, max_c)):
+                    if grid[r1][c] is not None:
+                        return None
+            return [pos1, pos2]
+        
+        # Vertical line
+        if c1 == c2:
+            # Check if column is within bounds
+            if 0 <= c1 < self.size:
+                min_r, max_r = min(r1, r2), max(r1, r2)
+                for r in range(max(0, min_r + 1), min(self.size, max_r)):
+                    if grid[r][c1] is not None:
+                        return None
+            return [pos1, pos2]
+        
+        return None
+    
+    def _check_l_path(self, pos1: Tuple[int, int], pos2: Tuple[int, int], 
+                      grid: List[List[Optional[int]]]):
+        """Check L-shaped path (1 turn), return path if exists"""
+        r1, c1 = pos1
+        r2, c2 = pos2
+        
+        # Try corner at (r1, c2)
+        corner1 = (r1, c2)
+        if self._is_empty_or_endpoint(corner1, pos1, pos2, grid):
+            path1 = self._check_line(pos1, corner1, grid)
+            path2 = self._check_line(corner1, pos2, grid)
+            if path1 and path2:
+                return [pos1, corner1, pos2]
+        
+        # Try corner at (r2, c1)
+        corner2 = (r2, c1)
+        if self._is_empty_or_endpoint(corner2, pos1, pos2, grid):
+            path1 = self._check_line(pos1, corner2, grid)
+            path2 = self._check_line(corner2, pos2, grid)
+            if path1 and path2:
+                return [pos1, corner2, pos2]
+        
+        return None
+    
+    def _check_z_path(self, pos1: Tuple[int, int], pos2: Tuple[int, int], 
+                      grid: List[List[Optional[int]]]):
+        """Check Z-shaped and U-shaped path (2 turns), return path if exists"""
+        r1, c1 = pos1
+        r2, c2 = pos2
+        
+        # Try horizontal first, then vertical, then horizontal (Z-shape inside board)
+        for c in range(self.size):
+            if c == c1:
+                continue
+            mid1 = (r1, c)
+            if not self._is_empty_or_endpoint(mid1, pos1, pos2, grid):
+                continue
+            path1 = self._check_line(pos1, mid1, grid)
+            if not path1:
+                continue
+            
+            mid2 = (r2, c)
+            if self._is_empty_or_endpoint(mid2, pos1, pos2, grid):
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        # Try vertical first, then horizontal, then vertical (Z-shape inside board)
+        for r in range(self.size):
+            if r == r1:
+                continue
+            mid1 = (r, c1)
+            if not self._is_empty_or_endpoint(mid1, pos1, pos2, grid):
+                continue
+            path1 = self._check_line(pos1, mid1, grid)
+            if not path1:
+                continue
+            
+            mid2 = (r, c2)
+            if self._is_empty_or_endpoint(mid2, pos1, pos2, grid):
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        # Try U-shaped paths going outside the board (top edge)
+        if r1 >= 0 and r2 >= 0:
+            # Check if we can go up from both positions
+            can_go_up_1 = True
+            for r in range(0, r1):
+                if grid[r][c1] is not None:
+                    can_go_up_1 = False
+                    break
+            
+            can_go_up_2 = True
+            for r in range(0, r2):
+                if grid[r][c2] is not None:
+                    can_go_up_2 = False
+                    break
+            
+            if can_go_up_1 and can_go_up_2:
+                mid1 = (-1, c1)
+                mid2 = (-1, c2)
+                path1 = self._check_line(pos1, mid1, grid)
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path1 and path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        # Try U-shaped paths going outside the board (bottom edge)
+        if r1 < self.size and r2 < self.size:
+            can_go_down_1 = True
+            for r in range(r1 + 1, self.size):
+                if grid[r][c1] is not None:
+                    can_go_down_1 = False
+                    break
+            
+            can_go_down_2 = True
+            for r in range(r2 + 1, self.size):
+                if grid[r][c2] is not None:
+                    can_go_down_2 = False
+                    break
+            
+            if can_go_down_1 and can_go_down_2:
+                mid1 = (self.size, c1)
+                mid2 = (self.size, c2)
+                path1 = self._check_line(pos1, mid1, grid)
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path1 and path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        # Try U-shaped paths going outside the board (left edge)
+        if c1 >= 0 and c2 >= 0:
+            can_go_left_1 = True
+            for c in range(0, c1):
+                if grid[r1][c] is not None:
+                    can_go_left_1 = False
+                    break
+            
+            can_go_left_2 = True
+            for c in range(0, c2):
+                if grid[r2][c] is not None:
+                    can_go_left_2 = False
+                    break
+            
+            if can_go_left_1 and can_go_left_2:
+                mid1 = (r1, -1)
+                mid2 = (r2, -1)
+                path1 = self._check_line(pos1, mid1, grid)
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path1 and path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        # Try U-shaped paths going outside the board (right edge)
+        if c1 < self.size and c2 < self.size:
+            can_go_right_1 = True
+            for c in range(c1 + 1, self.size):
+                if grid[r1][c] is not None:
+                    can_go_right_1 = False
+                    break
+            
+            can_go_right_2 = True
+            for c in range(c2 + 1, self.size):
+                if grid[r2][c] is not None:
+                    can_go_right_2 = False
+                    break
+            
+            if can_go_right_1 and can_go_right_2:
+                mid1 = (r1, self.size)
+                mid2 = (r2, self.size)
+                path1 = self._check_line(pos1, mid1, grid)
+                path2 = self._check_line(mid1, mid2, grid)
+                path3 = self._check_line(mid2, pos2, grid)
+                if path1 and path2 and path3:
+                    return [pos1, mid1, mid2, pos2]
+        
+        return None
+    
+    def get_value(self, pos: Tuple[int, int]) -> Optional[int]:
+        """Get value at position"""
+        r, c = pos
+        if 0 <= r < self.size and 0 <= c < self.size:
+            return self.grid[r][c]
+        return None
+    
+    def set_value(self, pos: Tuple[int, int], value: Optional[int]):
+        """Set value at position"""
+        r, c = pos
+        if 0 <= r < self.size and 0 <= c < self.size:
+            self.grid[r][c] = value
+    
+    def is_empty(self) -> bool:
+        """Check if board is completely empty"""
+        for row in self.grid:
+            for cell in row:
+                if cell is not None:
+                    return False
+        return True
+    
+    def count_cells(self) -> int:
+        """Count non-empty cells"""
+        count = 0
+        for row in self.grid:
+            for cell in row:
+                if cell is not None:
+                    count += 1
+        return count
+    
+    def has_valid_moves(self) -> bool:
+        """Check if there are any valid moves left"""
+        # Collect all remaining values
+        remaining_values = []
+        for row in self.grid:
+            for cell in row:
+                if cell is not None:
+                    remaining_values.append(cell)
+        
+        # If empty or only 1 cell, no valid moves
+        if len(remaining_values) <= 1:
+            return False
+        
+        # Check if any pair can be connected
+        for i in range(self.size):
+            for j in range(self.size):
+                if self.grid[i][j] is None:
+                    continue
+                for x in range(self.size):
+                    for y in range(self.size):
+                        if (i, j) != (x, y) and self.grid[x][y] is not None:
+                            # Check if they can be connected
+                            if self.can_connect((i, j), (x, y)):
+                                # Check if this move would change the board
+                                val1 = self.grid[i][j]
+                                val2 = self.grid[x][y]
+                                
+                                # Same values or GCD > 1 means valid move
+                                if val1 == val2 or gcd(val1, val2) > 1:
+                                    return True
+        
+        # If we reach here, all remaining pairs are coprime and can't be connected
+        # or can be connected but GCD=1 (no change)
+        return False
+
+
+# ======================================================================
+# LOGIC GAME
+# ======================================================================
+
+class Game:
+    def __init__(self, mode: str):
+        self.mode = mode
+        self.mode_config = MODES[mode]
+        self.board = Board(self.mode_config['size'], self.mode_config['max_value'], self.mode_config.get('min_value', 2))
+        self.selected_cell = None
+        self.hover_cell = None
+        self.score = 0
+        self.start_time = time.time()
+        self.game_over = False
+        self.victory = False
+        self.message = ""
+        self.last_path = []
+        self.connection_path = []
+        self.path_timer = 0
+    
+    def get_elapsed_time(self) -> float:
+        """Get elapsed time in seconds"""
+        if self.game_over:
+            return self.end_time - self.start_time
+        return time.time() - self.start_time
+    
+    def handle_cell_click(self, pos: Tuple[int, int]):
+        """Handle clicking on a cell"""
+        if self.game_over:
+            return
+        
+        value = self.board.get_value(pos)
+        if value is None:
+            return
+        
+        if self.selected_cell is None:
+            self.selected_cell = pos
+            self.message = "Đã chọn ô có giá trị {}".format(value)
+        else:
+            if self.selected_cell == pos:
+                self.selected_cell = None
+                self.message = "Bỏ chọn"
+                return
+            
+            # Try to connect
+            if self.board.can_connect(self.selected_cell, pos):
+                # Check if the move is actually useful (GCD > 1 or same values)
+                val1 = self.board.get_value(self.selected_cell)
+                val2 = self.board.get_value(pos)
+                
+                if val1 == val2 or gcd(val1, val2) > 1:
+                    self._process_connection(self.selected_cell, pos)
+                else:
+                    self.message = "Không thể nối! UCLN = 1 (nguyên tố cùng nhau)"
+                    self.selected_cell = pos
+            else:
+                self.message = "Không thể nối 2 ô này!"
+                self.selected_cell = pos
+    
+    def _process_connection(self, pos1: Tuple[int, int], pos2: Tuple[int, int]):
+        """Process connection between two cells"""
+        val1 = self.board.get_value(pos1)
+        val2 = self.board.get_value(pos2)
+        
+        if val1 is None or val2 is None:
+            return
+        
+        # Store path for animation
+        self.connection_path = self.board.last_path.copy() if hasattr(self.board, 'last_path') else []
+        self.path_timer = 0.5  # Show path for 0.5 seconds
+        
+        # Calculate score
+        points = calculate_score(val1, val2)
+        self.score += points
+        
+        # Apply rule
+        new_val1, new_val2, gcd_val = apply_gcd_rule(val1, val2)
+        
+        # Update board
+        self.board.set_value(pos1, new_val1)
+        self.board.set_value(pos2, new_val2)
+        
+        # Update message
+        if val1 == val2:
+            self.message = "Nối {} = {}! +{} điểm".format(val1, val2, points)
+        elif new_val1 is None and new_val2 is None:
+            self.message = "Nối {} và {}, UCLN={}, cả 2 ô biến mất! +{} điểm".format(val1, val2, gcd_val, points)
+        elif new_val1 is None:
+            self.message = "Nối {} và {}, UCLN={}, {} biến mất, {}→{}! +{} điểm".format(val1, val2, gcd_val, val1, val2, new_val2, points)
+        elif new_val2 is None:
+            self.message = "Nối {} và {}, UCLN={}, {} biến mất, {}→{}! +{} điểm".format(val1, val2, gcd_val, val2, val1, new_val1, points)
+        else:
+            self.message = "Nối {} và {}, UCLN={}, {}→{}, {}→{}! +{} điểm".format(val1, val2, gcd_val, val1, new_val1, val2, new_val2, points)
+        
+        self.selected_cell = None
+        
+        # Check game state
+        self._check_game_state()
+    
+    def _check_game_state(self):
+        """Check if game is won or lost"""
+        if self.board.is_empty():
+            self.game_over = True
+            self.victory = True
+            self.end_time = time.time()
+            self.message = "CHIẾN THẮNG! Điểm: {}, Thời gian: {}".format(self.score, format_time(self.get_elapsed_time()))
+        elif not self.board.has_valid_moves():
+            self.game_over = True
+            self.victory = False
+            self.end_time = time.time()
+            self.message = "THUA CUỘC! Không còn nước đi hợp lệ. Điểm: {}".format(self.score)
+    
+    def draw(self, screen: pygame.Surface):
+        """Draw the game"""
+        # Update path timer
+        if self.path_timer > 0:
+            self.path_timer -= 1/60.0  # Decrease by frame time
+            if self.path_timer <= 0:
+                self.connection_path = []
+        
+        # Calculate cell size
+        board_area_width = SCREEN_WIDTH - SIDE_PANEL_WIDTH - 40
+        board_area_height = SCREEN_HEIGHT - 200
+        
+        cell_size = min(board_area_width // self.board.size, 
+                       board_area_height // self.board.size) - CELL_MARGIN
+        
+        board_width = (cell_size + CELL_MARGIN) * self.board.size
+        board_height = (cell_size + CELL_MARGIN) * self.board.size
+        
+        board_x = (SCREEN_WIDTH - SIDE_PANEL_WIDTH - board_width) // 2
+        board_y = 120
+        
+        # Store board position for click detection
+        self.board_offset = (board_x, board_y)
+        self.cell_size = cell_size
+        
+        # Draw connection path first (under cells)
+        if self.connection_path:
+            self._draw_connection_path(screen, board_x, board_y, cell_size)
+        
+        # Draw cells
+        font = pygame.font.SysFont(FONT_NAME, min(cell_size // 2, 48), bold=True)
+        
+        for i in range(self.board.size):
+            for j in range(self.board.size):
+                x = board_x + j * (cell_size + CELL_MARGIN)
+                y = board_y + i * (cell_size + CELL_MARGIN)
+                
+                value = self.board.get_value((i, j))
+                if value is None:
+                    continue
+                
+                # Determine cell color
+                if (i, j) == self.selected_cell:
+                    color = CELL_SELECTED
+                elif (i, j) == self.hover_cell:
+                    color = CELL_HOVER
+                else:
+                    color = CELL_BG
+                
+                # Draw cell
+                pygame.draw.rect(screen, color, (x, y, cell_size, cell_size))
+                pygame.draw.rect(screen, CELL_BORDER, (x, y, cell_size, cell_size), 3)
+                
+                # Draw value
+                text = font.render(str(value), True, WHITE)
+                text_rect = text.get_rect(center=(x + cell_size // 2, y + cell_size // 2))
+                screen.blit(text, text_rect)
+        
+        # Draw side panel
+        self._draw_side_panel(screen)
+        
+        # Draw message
+        self._draw_message(screen)
+    
+    def _draw_connection_path(self, screen: pygame.Surface, board_x: int, board_y: int, cell_size: int):
+        """Draw the connection path between two cells"""
+        if len(self.connection_path) < 2:
+            return
+        
+        # Convert board positions to screen coordinates
+        points = []
+        for r, c in self.connection_path:
+            # Handle positions outside the board
+            if r < 0:
+                y = board_y - (cell_size + CELL_MARGIN)
+            elif r >= self.board.size:
+                y = board_y + self.board.size * (cell_size + CELL_MARGIN)
+            else:
+                y = board_y + r * (cell_size + CELL_MARGIN) + cell_size // 2
+            
+            if c < 0:
+                x = board_x - (cell_size + CELL_MARGIN)
+            elif c >= self.board.size:
+                x = board_x + self.board.size * (cell_size + CELL_MARGIN)
+            else:
+                x = board_x + c * (cell_size + CELL_MARGIN) + cell_size // 2
+            
+            points.append((x, y))
+        
+        # Draw lines
+        if len(points) >= 2:
+            pygame.draw.lines(screen, ORANGE, False, points, 5)
+    
+    def _draw_side_panel(self, screen: pygame.Surface):
+        """Draw side panel with game info"""
+        panel_x = SCREEN_WIDTH - SIDE_PANEL_WIDTH
+        
+        # Background
+        pygame.draw.rect(screen, LIGHT_GRAY, (panel_x, 0, SIDE_PANEL_WIDTH, SCREEN_HEIGHT))
+        pygame.draw.line(screen, BLUE, (panel_x, 0), (panel_x, SCREEN_HEIGHT), 3)
+        
+        # Title
+        font_title = pygame.font.SysFont(FONT_NAME, 32, bold=True)
+        font_info = pygame.font.SysFont(FONT_NAME, 28)
+        
+        y = 20
+        
+        title = font_title.render("THÔNG TIN", True, YELLOW)
+        screen.blit(title, (panel_x + 20, y))
+        y += 50
+        
+        # Mode
+        mode_text = font_info.render("Độ khó:", True, WHITE)
+        screen.blit(mode_text, (panel_x + 20, y))
+        y += 30
+        mode_name = font_info.render(self.mode_config['name'], True, CYAN)
+        screen.blit(mode_name, (panel_x + 20, y))
+        y += 50
+        
+        # Score
+        score_text = font_info.render("Điểm:", True, WHITE)
+        screen.blit(score_text, (panel_x + 20, y))
+        y += 30
+        score_val = font_title.render(str(self.score), True, GREEN)
+        screen.blit(score_val, (panel_x + 20, y))
+        y += 50
+        
+        # Time
+        time_text = font_info.render("Thời gian:", True, WHITE)
+        screen.blit(time_text, (panel_x + 20, y))
+        y += 30
+        time_val = font_info.render(format_time(self.get_elapsed_time()), True, ORANGE)
+        screen.blit(time_val, (panel_x + 20, y))
+        y += 50
+        
+        # Cells remaining
+        cells_text = font_info.render("Ô còn lại:", True, WHITE)
+        screen.blit(cells_text, (panel_x + 20, y))
+        y += 30
+        cells_val = font_info.render(str(self.board.count_cells()), True, PURPLE)
+        screen.blit(cells_val, (panel_x + 20, y))
+    
+    def _draw_message(self, screen: pygame.Surface):
+        """Draw message at bottom"""
+        font = pygame.font.SysFont(FONT_NAME, 28)
+        text = font.render(self.message, True, WHITE)
+        text_rect = text.get_rect(center=(SCREEN_WIDTH // 2 - SIDE_PANEL_WIDTH // 2, SCREEN_HEIGHT - 40))
+        
+        # Background
+        bg_rect = text_rect.inflate(20, 10)
+        pygame.draw.rect(screen, LIGHT_GRAY, bg_rect)
+        pygame.draw.rect(screen, BLUE, bg_rect, 2)
+        
+        screen.blit(text, text_rect)
+    
+    def get_cell_at_pos(self, mouse_pos: Tuple[int, int]) -> Optional[Tuple[int, int]]:
+        """Get cell position from mouse position"""
+        if not hasattr(self, 'board_offset'):
+            return None
+        
+        mx, my = mouse_pos
+        bx, by = self.board_offset
+        
+        if mx < bx or my < by:
+            return None
+        
+        col = (mx - bx) // (self.cell_size + CELL_MARGIN)
+        row = (my - by) // (self.cell_size + CELL_MARGIN)
+        
+        if 0 <= row < self.board.size and 0 <= col < self.board.size:
+            return (row, col)
+        return None
+
+
+# ======================================================================
+# GIAO DIỆN MENU & VÒNG LẶP CHÍNH
+# ======================================================================
+
+class MenuButton:
+    def __init__(self, x, y, width, height, text, mode):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.mode = mode
+        self.hovered = False
+    
+    def draw(self, screen):
+        color = BLUE if self.hovered else LIGHT_GRAY
+        pygame.draw.rect(screen, color, self.rect)
+        pygame.draw.rect(screen, WHITE, self.rect, 3)
+        
+        font = pygame.font.SysFont(FONT_NAME, 28, bold=True)
+        text = font.render(self.text, True, WHITE)
+        text_rect = text.get_rect(center=self.rect.center)
+        screen.blit(text, text_rect)
+    
+    def handle_event(self, event):
+        if event.type == pygame.MOUSEMOTION:
+            self.hovered = self.rect.collidepoint(event.pos)
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if self.hovered:
+                return self.mode
+        return None
+
+class Menu:
+    def __init__(self, screen):
+        self.screen = screen
+        self.buttons = []
+        
+        # Create buttons
+        start_y = 200
+        spacing = BUTTON_HEIGHT + BUTTON_MARGIN
+        
+        modes = [
+            ('EASY', 'DỄ'),
+            ('MEDIUM', 'TRUNG BÌNH'),
+            ('HARD', 'KHÓ'),
+            ('EXPERT', 'SIÊU TRÍ TUỆ')
+        ]
+        
+        for i, (mode, text) in enumerate(modes):
+            x = (SCREEN_WIDTH - BUTTON_WIDTH) // 2
+            y = start_y + i * spacing
+            self.buttons.append(MenuButton(x, y, BUTTON_WIDTH, BUTTON_HEIGHT, text, mode))
+    
+    def draw(self):
+        self.screen.fill(BG_COLOR)
+        
+        # Title
+        font_title = pygame.font.SysFont(FONT_NAME, 64, bold=True)
+        title = font_title.render("SỐ LIÊN TRANH BÁ", True, YELLOW)
+        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, 100))
+        self.screen.blit(title, title_rect)
+        
+        # Subtitle
+        font_sub = pygame.font.SysFont(FONT_NAME, 28)
+        subtitle = font_sub.render("Chọn độ khó:", True, WHITE)
+        subtitle_rect = subtitle.get_rect(center=(SCREEN_WIDTH // 2, 160))
+        self.screen.blit(subtitle, subtitle_rect)
+        
+        # Buttons
+        for button in self.buttons:
+            button.draw(self.screen)
+        
+        # Instructions
+        font_inst = pygame.font.SysFont(FONT_NAME, 20)
+        instructions = [
+            "Luật chơi: Nối các ô giống nhau hoặc có UCLN > 1",
+            "Chiến thắng khi clear hết bảng",
+            "Thua cuộc khi không còn nước đi hợp lệ"
+        ]
+        
+        y = SCREEN_HEIGHT - 100
+        for inst in instructions:
+            text = font_inst.render(inst, True, GRAY)
+            text_rect = text.get_rect(center=(SCREEN_WIDTH // 2, y))
+            self.screen.blit(text, text_rect)
+            y += 25
+    
+    def handle_event(self, event):
+        for button in self.buttons:
+            result = button.handle_event(event)
+            if result:
+                return result
+        return None
+
+class GameOverScreen:
+    def __init__(self, screen, victory, score, time_str):
+        self.screen = screen
+        self.victory = victory
+        self.score = score
+        self.time_str = time_str
+        
+        # Create buttons
+        self.menu_button = MenuButton(
+            SCREEN_WIDTH // 2 - BUTTON_WIDTH - 10,
+            SCREEN_HEIGHT // 2 + 100,
+            BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+            "MENU",
+            'menu'
+        )
+        
+        self.quit_button = MenuButton(
+            SCREEN_WIDTH // 2 + 10,
+            SCREEN_HEIGHT // 2 + 100,
+            BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+            "THOÁT",
+            'quit'
+        )
+    
+    def draw(self):
+        # Semi-transparent overlay
+        overlay = pygame.Surface((SCREEN_WIDTH, SCREEN_HEIGHT))
+        overlay.set_alpha(230)
+        overlay.fill(BLACK)
+        self.screen.blit(overlay, (0, 0))
+        
+        # Title
+        font_title = pygame.font.SysFont(FONT_NAME, 72, bold=True)
+        color = GREEN if self.victory else RED
+        title_text = "CHIẾN THẮNG!" if self.victory else "THUA CUỘC!"
+        title = font_title.render(title_text, True, color)
+        title_rect = title.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 100))
+        self.screen.blit(title, title_rect)
+        
+        # Score and time
+        font_info = pygame.font.SysFont(FONT_NAME, 36)
+        
+        score_text = font_info.render('Điểm: {}'.format(self.score), True, WHITE)
+        score_rect = score_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 - 20))
+        self.screen.blit(score_text, score_rect)
+        
+        if self.victory:
+            time_text = font_info.render('Thời gian: {}'.format(self.time_str), True, WHITE)
+            time_rect = time_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+            self.screen.blit(time_text, time_rect)
+        
+        # Buttons
+        self.menu_button.draw(self.screen)
+        self.quit_button.draw(self.screen)
+        
+        if self.victory:
+            time_text = font_info.render("Thời gian: {}".format(self.time_str), True, BLACK)
+            time_rect = time_text.get_rect(center=(SCREEN_WIDTH // 2, SCREEN_HEIGHT // 2 + 20))
+            self.screen.blit(time_text, time_rect)
+        
+        # Buttons
+        self.menu_button.draw(self.screen)
+        self.quit_button.draw(self.screen)
+    
+    def handle_event(self, event):
+        menu_result = self.menu_button.handle_event(event)
+        if menu_result:
+            return menu_result
+        
+        quit_result = self.quit_button.handle_event(event)
+        if quit_result:
+            return quit_result
+        
+        return None
+
+def main():
+    pygame.init()
+    screen = pygame.display.set_mode((SCREEN_WIDTH, SCREEN_HEIGHT))
+    pygame.display.set_caption("Số Liên Tranh Bá")
+    clock = pygame.time.Clock()
+    
+    state = 'menu'
+    menu = Menu(screen)
+    game = None
+    game_over_screen = None
+    
+    running = True
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+            
+            if state == 'menu':
+                result = menu.handle_event(event)
+                if result:
+                    game = Game(result)
+                    state = 'game'
+            
+            elif state == 'game':
+                if event.type == pygame.MOUSEMOTION:
+                    cell = game.get_cell_at_pos(event.pos)
+                    game.hover_cell = cell
+                
+                elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                    cell = game.get_cell_at_pos(event.pos)
+                    if cell:
+                        game.handle_cell_click(cell)
+                
+                elif event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_ESCAPE:
+                        state = 'menu'
+                        menu = Menu(screen)
+                
+                if game.game_over and state == 'game':
+                    game_over_screen = GameOverScreen(
+                        screen,
+                        game.victory,
+                        game.score,
+                        format_time(game.get_elapsed_time())
+                    )
+                    state = 'game_over'
+            
+            elif state == 'game_over':
+                result = game_over_screen.handle_event(event)
+                if result == 'menu':
+                    state = 'menu'
+                    menu = Menu(screen)
+                elif result == 'quit':
+                    running = False
+        
+        # Draw
+        screen.fill(BG_COLOR)
+        
+        if state == 'menu':
+            menu.draw()
+        elif state == 'game':
+            game.draw(screen)
+            
+            # Draw back button
+            font = pygame.font.SysFont(FONT_NAME, 24)
+            back_text = font.render("ESC - Quay lại menu", True, GRAY)
+            screen.blit(back_text, (10, 10))
+        elif state == 'game_over':
+            game.draw(screen)
+            game_over_screen.draw()
+        
+        pygame.display.flip()
+        clock.tick(FPS)
+    
+    pygame.quit()
+    sys.exit()
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,716 @@
+# -*- coding: utf-8 -*-
+"""
+four_colors_game.py - Four Colors Game (single file)
+
+Gộp từ: config.py, voronoi_generator.py, voronoi_cell.py, game_state.py, main.py
+(bounding_draft.py chỉ là bản nháp để vẽ ảnh bằng matplotlib nên không đưa vào.)
+
+Yêu cầu: pip install pygame numpy scipy shapely matplotlib
+Chạy:    python four_colors_game.py
+"""
+
+import random
+import sys
+
+import numpy as np
+import pygame
+from matplotlib.path import Path
+from scipy.spatial import Voronoi
+from shapely.geometry import Polygon as ShapelyPolygon
+
+
+# =====================================================================
+# CONFIG
+# =====================================================================
+
+# Window settings - Fullscreen 1920x1080
+WINDOW_WIDTH = 1920
+WINDOW_HEIGHT = 1080
+SCREEN_WIDTH = 1400
+SCREEN_HEIGHT = 900
+SCREEN_X = 100
+SCREEN_Y = 80
+
+# Colors
+COLOR_SCREEN_BG = (43, 43, 43)
+COLOR_BACKGROUND = (0, 0, 0)
+COLOR_BORDER = (200, 200, 200)
+COLOR_CELL_BORDER = (255, 0, 0)
+COLOR_CELL_BORDER_ERROR = (255, 255, 0)
+
+# Game colors
+COLOR_RED = (220, 50, 50)
+COLOR_GREEN = (50, 220, 50)
+COLOR_BLUE = (50, 50, 220)
+COLOR_YELLOW = (220, 220, 50)
+COLOR_EMPTY = (80, 80, 80)
+
+# UI colors
+COLOR_BUTTON_BG = (100, 200, 100)
+COLOR_BUTTON_TEXT = (255, 255, 255)
+COLOR_BUTTON_HOVER = (120, 220, 120)
+COLOR_BUTTON_DISABLED = (80, 80, 80)
+
+# Font
+FONT_NAME = "Arial"
+FONT_SIZE = 24
+FONT_SIZE_LARGE = 60
+FONT_SIZE_SMALL = 20
+
+# Game settings
+VORONOI_WIDTH = 16.0
+VORONOI_HEIGHT = 9.0
+NUM_CELLS = 200
+VORONOI_SEED = 42
+
+# Color palette
+GAME_COLORS = {
+    "RED": COLOR_RED,
+    "GREEN": COLOR_GREEN,
+    "BLUE": COLOR_BLUE,
+    "YELLOW": COLOR_YELLOW,
+}
+
+COLOR_NAMES = ["RED", "GREEN", "BLUE", "YELLOW"]
+
+# UI Layout
+COLOR_BUTTON_SIZE = 80
+COLOR_BUTTON_GAP = 20
+CHECK_BUTTON_WIDTH = 150
+CHECK_BUTTON_HEIGHT = 50
+SUBMIT_BUTTON_WIDTH = 150
+SUBMIT_BUTTON_HEIGHT = 50
+
+# Game rules
+MAX_CHECKS = 2
+ERROR_BLINK_DURATION = 20.0  # seconds
+BLINK_INTERVAL = 0.5  # seconds
+TARGET_COLOR_OFFSET = 150  # pixels offset for target color
+
+
+# =====================================================================
+# VORONOI GENERATOR
+# =====================================================================
+
+def jagged_edge(p1, p2, n_points=8, strength=0.05, seed=None):
+    """Sinh các điểm gấp khúc dọc theo đoạn p1 -> p2"""
+    rng = random.Random(seed)
+
+    p1 = np.array(p1, dtype=float)
+    p2 = np.array(p2, dtype=float)
+    edge_vec = p2 - p1
+    edge_len = np.linalg.norm(edge_vec)
+    normal = np.array([-edge_vec[1], edge_vec[0]]) / edge_len
+
+    points = [p1.copy()]
+    for i in range(1, n_points + 1):
+        t = i / (n_points + 1)
+        base = p1 + edge_vec * t
+        offset = rng.uniform(-strength, strength) * edge_len
+        points.append(base + normal * offset)
+    points.append(p2.copy())
+
+    return points
+
+
+def build_bounding_shape(width, height, seed=42):
+    """Tạo đa giác biên: trên/dưới gấp khúc nhẹ, trái/phải gấp khúc mạnh"""
+    bl = (0.0, 0.0)
+    br = (width, 0.0)
+    tr = (width, height)
+    tl = (0.0, height)
+
+    bottom = jagged_edge(bl, br, n_points=14, strength=0.012, seed=seed)
+    right = jagged_edge(br, tr, n_points=18, strength=0.07, seed=seed + 1)
+    top = jagged_edge(tr, tl, n_points=14, strength=0.012, seed=seed + 2)
+    left = jagged_edge(tl, bl, n_points=18, strength=0.07, seed=seed + 3)
+
+    return bottom[:-1] + right[:-1] + top[:-1] + left[:-1]
+
+
+def random_points_in_polygon(polygon, n_points=200, seed=None):
+    """Sinh điểm ngẫu nhiên nằm trong đa giác (rejection sampling)"""
+    rng = np.random.RandomState(seed)
+    path = Path(polygon)
+
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    xmin, xmax = min(xs), max(xs)
+    ymin, ymax = min(ys), max(ys)
+
+    points = []
+    while len(points) < n_points:
+        batch = rng.random_sample((n_points * 2, 2))
+        batch[:, 0] = xmin + batch[:, 0] * (xmax - xmin)
+        batch[:, 1] = ymin + batch[:, 1] * (ymax - ymin)
+        inside = batch[path.contains_points(batch)]
+        points.extend(inside.tolist())
+
+    return np.array(points[:n_points])
+
+
+def add_far_points(points, width, height, margin_multiplier=5):
+    """
+    Thêm các điểm ảo rất xa để mọi Voronoi region của điểm thật là hữu hạn.
+    Trả về (points_moi, so_diem_that).
+    """
+    cx, cy = width / 2.0, height / 2.0
+    far = max(width, height) * margin_multiplier
+
+    extra = np.array([
+        [cx - far, cy - far], [cx, cy - far], [cx + far, cy - far],
+        [cx - far, cy],                        [cx + far, cy],
+        [cx - far, cy + far], [cx, cy + far], [cx + far, cy + far],
+    ])
+
+    n_real = len(points)
+    combined = np.vstack([points, extra])
+    return combined, n_real
+
+
+def generate_voronoi_data(width, height, n_cells, seed):
+    """Sinh toàn bộ dữ liệu Voronoi cho game"""
+    polygon = build_bounding_shape(width, height, seed)
+    real_points = random_points_in_polygon(polygon, n_points=n_cells, seed=seed)
+
+    all_points, n_real = add_far_points(real_points, width, height)
+    vor = Voronoi(all_points)
+
+    return {
+        "polygon": polygon,
+        "points": real_points,
+        "n_real": n_real,
+        "vor": vor,
+    }
+
+
+# =====================================================================
+# VORONOI CELL
+# =====================================================================
+
+class VoronoiCell:
+    def __init__(self, point_id, vor, polygon, screen_scale, screen_offset):
+        """
+        point_id: index của điểm seed trong vor.points
+        vor: scipy Voronoi (đã tính với các điểm ảo)
+        polygon: đa giác biên jagged để clip (hệ tọa độ Voronoi, chưa scale)
+        """
+        self.point_id = point_id
+        self.color = None
+        self.neighbors = []
+        self.locked = False  # True nếu ô không được sửa
+        self.is_error = False
+        self.blink_visible = True
+
+        region_idx = vor.point_region[point_id]
+        region = vor.regions[region_idx]
+
+        if -1 in region or len(region) < 3:
+            self.vertices = []
+            self.screen_vertices = []
+            self.centroid = (0, 0)
+            self.path = None
+            return
+
+        raw_vertices = [tuple(vor.vertices[i]) for i in region]
+
+        # Clip region với bounding polygon
+        try:
+            cell_poly = ShapelyPolygon(raw_vertices)
+            bound_poly = ShapelyPolygon(polygon)
+            clipped = cell_poly.intersection(bound_poly)
+        except Exception:
+            clipped = None
+
+        clipped_coords = []
+        if clipped is not None and not clipped.is_empty:
+            if clipped.geom_type == "Polygon":
+                clipped_coords = list(clipped.exterior.coords)
+            elif clipped.geom_type == "MultiPolygon":
+                largest = max(clipped.geoms, key=lambda g: g.area)
+                clipped_coords = list(largest.exterior.coords)
+
+        self.vertices = clipped_coords
+
+        # Chuyển sang tọa độ màn hình
+        self.screen_vertices = [
+            (vx * screen_scale + screen_offset[0], vy * screen_scale + screen_offset[1])
+            for vx, vy in self.vertices
+        ]
+
+        self.path = Path(self.screen_vertices) if len(self.screen_vertices) >= 3 else None
+
+        if self.screen_vertices:
+            xs = [v[0] for v in self.screen_vertices]
+            ys = [v[1] for v in self.screen_vertices]
+            self.centroid = (sum(xs) / len(xs), sum(ys) / len(ys))
+        else:
+            self.centroid = (0, 0)
+
+    def is_valid(self):
+        return len(self.screen_vertices) >= 3 and self.path is not None
+
+    def contains_point(self, x, y):
+        if not self.path:
+            return False
+        return self.path.contains_point((x, y))
+
+    def set_color(self, color_name):
+        self.color = color_name
+
+    def add_neighbor(self, point_id):
+        if point_id not in self.neighbors:
+            self.neighbors.append(point_id)
+
+    def draw(self, surface, color_map, border_color, error_mode=False):
+        if not self.is_valid():
+            return
+
+        if self.color and self.color in color_map:
+            fill_color = color_map[self.color]
+        else:
+            fill_color = color_map.get("EMPTY", (80, 80, 80))
+
+        pygame.draw.polygon(surface, fill_color, self.screen_vertices)
+
+        if error_mode and self.is_error:
+            if self.blink_visible:
+                pygame.draw.polygon(surface, COLOR_CELL_BORDER_ERROR, self.screen_vertices, 3)
+        elif self.locked:
+            pygame.draw.polygon(surface, (255, 255, 255), self.screen_vertices, 3)
+        else:
+            pygame.draw.polygon(surface, border_color, self.screen_vertices, 1)
+
+
+# =====================================================================
+# GAME STATE
+# =====================================================================
+
+class GameState:
+    def __init__(self):
+        self.state = "START"  # START, COUNTDOWN, PLAYING, ERROR_BLINK, VICTORY
+        self.countdown_timer = 3.0
+        self.game_timer = 0.0
+        self.error_blink_timer = 0.0
+        self.blink_timer = 0.0
+
+        self.voronoi_data = None
+        self.cells = []
+        self.target_color = None
+        self.other_colors = []
+        self.checks_remaining = MAX_CHECKS
+        self.error_cells = []
+        self.score = 0
+
+        self.screen_scale = 1.0
+        self.screen_offset = (0, 0)
+
+        self.selected_color = None
+        self.color_buttons = {}
+
+    def start_game(self):
+        """Khởi tạo ván mới"""
+        seed = random.randint(1, 10000)
+        self.voronoi_data = generate_voronoi_data(
+            VORONOI_WIDTH, VORONOI_HEIGHT, NUM_CELLS, seed
+        )
+
+        screen_scale = min(
+            SCREEN_WIDTH / VORONOI_WIDTH,
+            SCREEN_HEIGHT / VORONOI_HEIGHT,
+        ) * 0.85
+
+        screen_offset = (
+            SCREEN_X + (SCREEN_WIDTH - VORONOI_WIDTH * screen_scale) / 2,
+            SCREEN_Y + (SCREEN_HEIGHT - VORONOI_HEIGHT * screen_scale) / 2,
+        )
+
+        self.screen_scale = screen_scale
+        self.screen_offset = screen_offset
+
+        n_real = self.voronoi_data["n_real"]
+        vor = self.voronoi_data["vor"]
+        polygon = self.voronoi_data["polygon"]
+
+        self.cells = []
+        for point_id in range(n_real):  # không lặp qua điểm ảo
+            cell = VoronoiCell(point_id, vor, polygon, self.screen_scale, self.screen_offset)
+            if cell.is_valid():
+                self.cells.append(cell)
+
+        self._compute_neighbors_from_voronoi(vor)
+
+        self.target_color = random.choice(COLOR_NAMES)
+        self.other_colors = [c for c in COLOR_NAMES if c != self.target_color]
+
+        # Tô sẵn một ô ngẫu nhiên bằng màu không phải màu mục tiêu và khoá lại
+        if self.cells:
+            random_cell = random.choice(self.cells)
+            random_cell.set_color(random.choice(self.other_colors))
+            random_cell.locked = True
+
+        self._setup_color_buttons()
+
+        self.checks_remaining = MAX_CHECKS
+        self.selected_color = None
+        self.error_cells = []
+        self.state = "COUNTDOWN"
+        self.countdown_timer = 3.0
+        self.game_timer = 0.0
+
+    def _compute_neighbors_from_voronoi(self, vor):
+        """Tính ô kề nhau từ vor.ridge_points"""
+        point_to_cell = {cell.point_id: idx for idx, cell in enumerate(self.cells)}
+
+        for p1, p2 in vor.ridge_points:
+            if p1 in point_to_cell and p2 in point_to_cell:
+                self.cells[point_to_cell[p1]].add_neighbor(p2)
+                self.cells[point_to_cell[p2]].add_neighbor(p1)
+
+    def _setup_color_buttons(self):
+        """Đặt các nút chọn màu ở dưới màn hình"""
+        self.color_buttons = {}
+
+        bottom_y = SCREEN_Y + SCREEN_HEIGHT + 20
+        start_x = SCREEN_X + 100
+
+        for i, color_name in enumerate(self.other_colors):
+            x = start_x + i * (COLOR_BUTTON_SIZE + COLOR_BUTTON_GAP)
+            self.color_buttons[color_name] = pygame.Rect(
+                x, bottom_y, COLOR_BUTTON_SIZE, COLOR_BUTTON_SIZE
+            )
+
+        target_x = (
+            start_x
+            + len(self.other_colors) * (COLOR_BUTTON_SIZE + COLOR_BUTTON_GAP)
+            + TARGET_COLOR_OFFSET
+        )
+        self.color_buttons[self.target_color] = pygame.Rect(
+            target_x, bottom_y, COLOR_BUTTON_SIZE, COLOR_BUTTON_SIZE
+        )
+
+    def handle_click(self, pos):
+        if self.state != "PLAYING":
+            return
+
+        for color_name, rect in self.color_buttons.items():
+            if rect.collidepoint(pos):
+                self.selected_color = color_name
+                return
+
+        if self.selected_color:
+            for cell in self.cells:
+                if cell.contains_point(pos[0], pos[1]):
+                    if cell.locked:
+                        return
+                    # Bấm lại cùng màu thì bỏ màu (toggle)
+                    if cell.color == self.selected_color:
+                        cell.set_color(None)
+                    else:
+                        cell.set_color(self.selected_color)
+                    return
+
+    def _find_conflicts(self):
+        """Trả về danh sách point_id của các ô có láng giềng cùng màu"""
+        point_to_cell = {cell.point_id: cell for cell in self.cells}
+        conflicts = []
+        for cell in self.cells:
+            if not cell.color:
+                continue
+            for nid in cell.neighbors:
+                neighbor = point_to_cell.get(nid)
+                if neighbor is not None and neighbor.color == cell.color:
+                    if cell.point_id not in conflicts:
+                        conflicts.append(cell.point_id)
+                    if nid not in conflicts:
+                        conflicts.append(nid)
+        return conflicts
+
+    def check_validity(self):
+        """Kiểm tra cách tô hiện tại có hợp lệ không"""
+        if self.checks_remaining <= 0:
+            return False
+
+        self.checks_remaining -= 1
+        self.error_cells = self._find_conflicts()
+
+        if self.error_cells:
+            point_to_cell = {cell.point_id: cell for cell in self.cells}
+            for point_id in self.error_cells:
+                if point_id in point_to_cell:
+                    point_to_cell[point_id].is_error = True
+
+            self.state = "ERROR_BLINK"
+            self.error_blink_timer = 0.0
+            self.blink_timer = 0.0
+            return False
+
+        return True
+
+    def submit_solution(self):
+        """Nộp bài"""
+        if any(not cell.color for cell in self.cells):
+            return False
+
+        if self._find_conflicts():
+            return False
+
+        target_count = sum(1 for cell in self.cells if cell.color == self.target_color)
+        self.score = target_count * 1000
+        self.state = "VICTORY"
+        return True
+
+    def update(self, dt):
+        if self.state == "COUNTDOWN":
+            self.countdown_timer -= dt
+            if self.countdown_timer <= 0:
+                self.state = "PLAYING"
+
+        elif self.state == "PLAYING":
+            self.game_timer += dt
+
+        elif self.state == "ERROR_BLINK":
+            self.error_blink_timer += dt
+            self.blink_timer += dt
+
+            point_to_cell = {cell.point_id: cell for cell in self.cells}
+
+            if self.blink_timer >= BLINK_INTERVAL:
+                self.blink_timer = 0.0
+                for point_id in self.error_cells:
+                    if point_id in point_to_cell:
+                        c = point_to_cell[point_id]
+                        c.blink_visible = not c.blink_visible
+
+            if self.error_blink_timer >= ERROR_BLINK_DURATION:
+                for point_id in self.error_cells:
+                    if point_id in point_to_cell:
+                        point_to_cell[point_id].is_error = False
+                        point_to_cell[point_id].blink_visible = True
+                self.error_cells = []
+                self.state = "PLAYING"
+
+    def format_time(self):
+        """Định dạng thời gian HH:MM:SS"""
+        total_seconds = int(self.game_timer)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        return "{:02d}:{:02d}:{:02d}".format(hours, minutes, seconds)
+
+
+# =====================================================================
+# MAIN GAME
+# =====================================================================
+
+class FourColorsGame:
+    def __init__(self):
+        pygame.init()
+        self.window = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
+        pygame.display.set_caption("Four Colors Game")
+
+        self.clock = pygame.time.Clock()
+        self.running = True
+
+        self.font = pygame.font.SysFont(FONT_NAME, FONT_SIZE)
+        self.large_font = pygame.font.SysFont(FONT_NAME, FONT_SIZE_LARGE)
+        self.small_font = pygame.font.SysFont(FONT_NAME, FONT_SIZE_SMALL)
+
+        self.game_state = GameState()
+
+        self.start_button_rect = pygame.Rect(
+            WINDOW_WIDTH // 2 - 100, WINDOW_HEIGHT // 2 + 80, 200, 80
+        )
+        self.check_button_rect = pygame.Rect(
+            SCREEN_X + SCREEN_WIDTH + 50, SCREEN_Y + 100,
+            CHECK_BUTTON_WIDTH, CHECK_BUTTON_HEIGHT
+        )
+        self.submit_button_rect = pygame.Rect(
+            SCREEN_X + SCREEN_WIDTH + 50, SCREEN_Y + 200,
+            SUBMIT_BUTTON_WIDTH, SUBMIT_BUTTON_HEIGHT
+        )
+
+    # ---------------------------------------------------------- events
+    def handle_events(self):
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                self.running = False
+
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    self.running = False
+                elif event.key in (pygame.K_RETURN, pygame.K_KP_ENTER):
+                    if self.game_state.state == "START":
+                        self.game_state.start_game()
+
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                pos = event.pos
+                state = self.game_state.state
+
+                if state == "START":
+                    if self.start_button_rect.collidepoint(pos):
+                        self.game_state.start_game()
+
+                elif state == "PLAYING":
+                    if self.check_button_rect.collidepoint(pos):
+                        self.game_state.check_validity()
+                    elif self.submit_button_rect.collidepoint(pos):
+                        self.game_state.submit_solution()
+                    else:
+                        self.game_state.handle_click(pos)
+
+                elif state == "VICTORY":
+                    self.game_state = GameState()
+
+    def update(self, dt):
+        self.game_state.update(dt)
+
+    # ---------------------------------------------------------- drawing
+    def draw(self):
+        self.window.fill(COLOR_BACKGROUND)
+        state = self.game_state.state
+
+        if state == "START":
+            self._draw_start_screen()
+        elif state == "COUNTDOWN":
+            self._draw_countdown()
+        elif state in ("PLAYING", "ERROR_BLINK"):
+            self._draw_game()
+        elif state == "VICTORY":
+            self._draw_victory()
+
+        pygame.display.flip()
+
+    def _draw_start_screen(self):
+        title = self.large_font.render("Four Colors Game", True, COLOR_BUTTON_TEXT)
+        self.window.blit(title, title.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 - 150)))
+
+        instructions = [
+            "Định lý 4 màu: Tô màu bản đồ sao cho không có 2 vùng kề nhau cùng màu",
+            "Mục tiêu: Sử dụng ít màu mục tiêu nhất có thể",
+            "Nhấn START hoặc Enter để bắt đầu",
+        ]
+
+        y = WINDOW_HEIGHT // 2 - 50
+        for text in instructions:
+            surf = self.small_font.render(text, True, COLOR_BUTTON_TEXT)
+            self.window.blit(surf, surf.get_rect(center=(WINDOW_WIDTH // 2, y)))
+            y += 30
+
+        pygame.draw.rect(self.window, COLOR_BUTTON_BG, self.start_button_rect)
+        pygame.draw.rect(self.window, COLOR_BORDER, self.start_button_rect, 2)
+        start_text = self.large_font.render("START", True, COLOR_BUTTON_TEXT)
+        self.window.blit(start_text, start_text.get_rect(center=self.start_button_rect.center))
+
+    def _draw_countdown(self):
+        count = int(self.game_state.countdown_timer) + 1
+        text = self.large_font.render(str(count), True, COLOR_BUTTON_TEXT)
+        self.window.blit(text, text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2)))
+
+    def _draw_game(self):
+        screen_rect = pygame.Rect(SCREEN_X, SCREEN_Y, SCREEN_WIDTH, SCREEN_HEIGHT)
+        pygame.draw.rect(self.window, COLOR_SCREEN_BG, screen_rect)
+
+        timer_text = self.font.render(self.game_state.format_time(), True, COLOR_BUTTON_TEXT)
+        self.window.blit(timer_text, timer_text.get_rect(center=(WINDOW_WIDTH // 2, 30)))
+
+        error_mode = self.game_state.state == "ERROR_BLINK"
+        color_map = dict(GAME_COLORS)
+        color_map["EMPTY"] = COLOR_EMPTY
+
+        for cell in self.game_state.cells:
+            cell.draw(self.window, color_map, COLOR_CELL_BORDER, error_mode)
+
+        self._draw_bounding_border()
+        pygame.draw.rect(self.window, COLOR_BORDER, screen_rect, 2)
+
+        self._draw_color_buttons()
+        self._draw_target_indicator()
+        self._draw_check_button()
+        self._draw_submit_button()
+
+        checks_text = self.small_font.render(
+            "Kiểm tra còn lại: {}".format(self.game_state.checks_remaining),
+            True, COLOR_BUTTON_TEXT,
+        )
+        self.window.blit(checks_text, (SCREEN_X + SCREEN_WIDTH + 50, SCREEN_Y + 50))
+
+    def _draw_color_buttons(self):
+        for color_name, rect in self.game_state.color_buttons.items():
+            pygame.draw.rect(self.window, GAME_COLORS[color_name], rect)
+
+            if color_name == self.game_state.selected_color:
+                pygame.draw.rect(self.window, (255, 255, 255), rect, 4)
+            else:
+                pygame.draw.rect(self.window, COLOR_BORDER, rect, 2)
+
+            text = self.small_font.render(color_name, True, (255, 255, 255))
+            self.window.blit(text, text.get_rect(center=rect.center))
+
+    def _draw_target_indicator(self):
+        text = self.font.render("Màu mục tiêu:", True, COLOR_BUTTON_TEXT)
+        target_rect = self.game_state.color_buttons[self.game_state.target_color]
+        self.window.blit(text, (target_rect.x - 20, target_rect.y - 40))
+
+    def _draw_check_button(self):
+        enabled = self.game_state.checks_remaining > 0 and self.game_state.state == "PLAYING"
+        color = COLOR_BUTTON_BG if enabled else COLOR_BUTTON_DISABLED
+
+        pygame.draw.rect(self.window, color, self.check_button_rect)
+        pygame.draw.rect(self.window, COLOR_BORDER, self.check_button_rect, 2)
+        text = self.font.render("Kiểm tra", True, COLOR_BUTTON_TEXT)
+        self.window.blit(text, text.get_rect(center=self.check_button_rect.center))
+
+    def _draw_submit_button(self):
+        enabled = self.game_state.state == "PLAYING"
+        color = COLOR_BUTTON_BG if enabled else COLOR_BUTTON_DISABLED
+
+        pygame.draw.rect(self.window, color, self.submit_button_rect)
+        pygame.draw.rect(self.window, COLOR_BORDER, self.submit_button_rect, 2)
+        text = self.font.render("Submit", True, COLOR_BUTTON_TEXT)
+        self.window.blit(text, text.get_rect(center=self.submit_button_rect.center))
+
+    def _draw_victory(self):
+        cx, cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
+
+        victory_text = self.large_font.render("CHIẾN THẮNG!", True, (50, 255, 50))
+        self.window.blit(victory_text, victory_text.get_rect(center=(cx, cy - 100)))
+
+        score_text = self.large_font.render(
+            "Điểm: {}".format(self.game_state.score), True, COLOR_BUTTON_TEXT)
+        self.window.blit(score_text, score_text.get_rect(center=(cx, cy)))
+
+        time_text = self.font.render(
+            "Thời gian: {}".format(self.game_state.format_time()), True, COLOR_BUTTON_TEXT)
+        self.window.blit(time_text, time_text.get_rect(center=(cx, cy + 80)))
+
+        restart_text = self.small_font.render("Nhấp chuột để chơi lại", True, COLOR_BUTTON_TEXT)
+        self.window.blit(restart_text, restart_text.get_rect(center=(cx, cy + 150)))
+
+    def _draw_bounding_border(self):
+        if not self.game_state.voronoi_data:
+            return
+
+        polygon = self.game_state.voronoi_data["polygon"]
+        scale = self.game_state.screen_scale
+        offset = self.game_state.screen_offset
+
+        screen_polygon = [(vx * scale + offset[0], vy * scale + offset[1]) for vx, vy in polygon]
+
+        if len(screen_polygon) >= 3:
+            pygame.draw.polygon(self.window, COLOR_CELL_BORDER, screen_polygon, 2)
+
+    # ---------------------------------------------------------- loop
+    def run(self):
+        while self.running:
+            dt = self.clock.tick(60) / 1000.0
+            self.handle_events()
+            self.update(dt)
+            self.draw()
+
+        pygame.quit()
+        sys.exit()
+
+
+if __name__ == "__main__":
+    FourColorsGame().run()

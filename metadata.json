@@ -1,0 +1,6 @@
+{
+  "name": "Ma Trận Trượt 3D",
+  "description": "Trò chơi giải đố không gian lưới 3D 8x8x3: điều khiển điểm di chuyển trượt thẳng qua 192 ô địa hình biến đổi bằng chuỗi lệnh ngắn nhất.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
